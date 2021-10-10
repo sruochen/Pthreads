@@ -1,0 +1,138 @@
+2021/09/02 22:36
+
+同步
+使用线程编写各种难度的程序都需要在线程间共享数据
+或需要一组一致的顺序在线程间执行一组操作
+为实现这一目标需要同步线程的各种操作
+
+线程同步问题的一些基本术语: 临界区, 不变量
+Pthreads提供的基本同步机制: 互斥量
+条件变量: 通过程序通知由互斥量控制的不变量的状态变化
+线程的一些重要信息和线程对系统内存的影响
+
+不变量, 临界区和谓词
+不变量是由程序作出的假设, 特别是有关变量组间关系的假设(如当前拿到的指针是有效的即非野指针)
+当程序遇到被破坏的不变量时系统可能返回错误结果甚至立即失败(如对野指针解引用)
+
+临界区(串行区域)是指影响共享数据的代码段
+临界区总能对应一个数据不变量, 反之亦然
+如将队列中与删除操作相关的代码片段视作临界区
+也可以将队列状态视为不变量, 两种思考方式皆可
+
+不变量经常被独立的代码段破坏, 需要确保线程访问被破坏的不变量之前将其修复
+这也是异步程序中同步机制的大部分工作, 同步机制使程序免于访问被破坏的不变量
+若一定要破坏不变量则需要锁住一个互斥量, 当其他线程需要访问该不变量时其也试图锁住同一个互斥量
+此时线程一直等待直到将互斥量解锁并恢复不变量的值才能访问
+
+同步是自愿的, 参与者必须协调工作使系统运行
+谓词, 是描述代码所需不变量的状态的语句, 如对列为空资源可用之类的描述
+谓词可以是布尔变量, 布尔表达式结果甚至某些函数的返回值如调用select或poll判断输入文件是否可用
+
+互斥量
+多线程程序需要在线程间共享数据, 两个线程同时访问共享数据可能会出问题
+例如一个线程可能在另一个线程修改共享数据的过程中使用了该数据而误以为该数据未变
+如何防止此类问题, 使线程同步最通用的方法是确保对相同(或相关)数据的内存访问互斥地进行
+即一次只能允许一个线程写数据而其他线程必须等待
+Pthreads使用了一种特殊形式的信号即互斥量(mutual exclusion即multex)
+正确使用互斥量比使用像通用信号之类的其他同步模型要容易
+也很容易地使用互斥量与条件变量结合建立任何同步模型, 互斥量简单灵活并能有效实现
+
+模型: 程序员的舀水桶类似于互斥量用于保持并发系统的完整性
+桶用于保护舀水临界区, 拿到水桶可以舀水而不拿时不干扰舀水
+将水桶理解为: 用来确保一次只能由一个人舀水这一不变量
+
+同步不仅仅在修改数据时重要
+当线程需要读取其他线程写入的数据且数据写入的顺序也有影响时同样需要同步
+很多硬件系统不能保证处理器以相同的顺序访问共享内存, 除非有软件支持
+
+实例, 一个线程向数组中某个元素添加新数据并更新max_index变量以表明该数组元素有效
+若处理线程在读取数组元素的新数据之前先读取了更新后的max_index便出现错误
+但这样工作的内存系统比按照确定顺序访问内存的系统要快得多, 互斥量是解决此问题的通用方法
+在访问共享数据的代码片段周围加锁互斥量则一次只能有一个线程进入该代码段
+
+图3.2互斥量操作
+线程1试图加锁互斥量在没有数据竞争时立即加锁成功
+线程2试图加锁互斥量时互斥量已被锁住
+于是线程2被阻塞直到线程1解锁互斥量解除对线程2的阻塞使其对互斥量加锁成功
+线程1调用pthread_mutex_trylock试图锁住互斥量失败而立即返回EBUSY
+线程2完成工作后解锁互斥量
+
+创建和销毁互斥量
+typedef ... pthread_mutex_t;
+#define PTHREAD_MUTEX_INITIALIZER ...
+int pthread_mutex_init(pthread_mutex_t *mutex, pthread_mutexattr_t *attr);
+int pthread_mutex_destroy(pthread_mutex_t *mutex);
+
+程序中的互斥量是用pthread_mutex_t类型的变量来表示的
+不能拷贝互斥量变量, 使用拷贝的互斥量变量是未定义行为
+可以拷贝指向互斥量的指针, 这样就可以使多个函数或线程共享互斥量来实现同步
+
+互斥量变量通常声明在源文件中函数体外为static或extern链接属性
+应使用宏PTHREAD_MUTEX_INITIALIZER来声明具有默认属性的静态互斥量
+
+mutex_static.c
+---------------------------
+#include "errors.h"
+#include <pthread.h>
+
+typedef struct my_struct_tag {
+    pthread_mutex_t mutex;
+    int value;
+} my_struct_t;
+
+my_struct_t data = {PTHREAD_MUTEX_INITIALIZER, 0};
+
+int main(int argc, char *argv[])
+{
+    return 0;
+}
+---------------------------
+
+通常在使用malloc动态分配一个包含互斥量数据结构的变量时没法像声明全局变量那样将其静态初始化(编译阶段初始化)
+此时应使用pthread_mutex_init调用来动态地初始化互斥量, 也可以动态地初始化静态声明的互斥量
+必须保证互斥量在使用前被初始化且仅初始化一次, 可以在创建任何线程之前初始化互斥量如通过调用pthread_once
+若需要初始化一个非默认属性的互斥量则必须使用动态初始化
+
+mutex_dynamic.c // 为什么不链接libpthread也能编译运行
+---------------------------
+#include "errors.h"
+#include <pthread.h>
+
+typedef struct my_struct_tag {
+    pthread_mutex_t mutex;
+    int value;
+} my_struct_t;
+
+int main(int argc, char *argv[])
+{
+    my_struct_t *data;
+    if ((data = malloc(sizeof(my_struct_t))) == NULL)
+        ERRNO_ABORT("Allocate structure");
+
+    int status;
+    if ((status = pthread_mutex_init(&data->mutex, NULL)) != 0)
+        ERR_ABORT(status, "Init mutex");
+    if ((status = pthread_mutex_destroy(&data->mutex)) != 0)
+        ERR_ABORT(status, "Destroy mutex");
+
+    free(data);
+    return 0;
+}
+---------------------------
+
+将互斥量和它要保护的数据明显联系起来是个好主意
+应尽可能将互斥量和数据定义在一起并通过注释语句记录关系
+
+当不再需要通过pthread_mutex_init调用动态初始化的互斥量时应调用pthread_mutex_destroy释放
+但不需要释放一个使用PTHREAD_MUTEX_INITIALIZER宏静态初始化的互斥量
+当确信没有线程在互斥量上阻塞(互斥量也没有被锁住)时可以立刻将其释放(安全地)
+获知此信息最好的方式是在刚刚解锁互斥量的线程内，程序逻辑确保随后不再有线程会加锁该互斥量
+当线程在某个堆栈数据结构中锁住互斥量，以从列表中删除该结构并释放内存时，
+在释放互斥量占有的空间之前先将互斥量解锁和释放是个安全且不错的主意
+
+加锁和解锁互斥量
+int pthread_mutex_lock(pthread_mutex_t *mutex);
+int pthread_mutex_trylock(pthread_mutex_t *mutex);
+int pthread_mutex_unlock(pthread_mutex_t *mutex);
+
+简单情况下使用互斥量相当容易
