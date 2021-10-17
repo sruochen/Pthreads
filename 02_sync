@@ -136,3 +136,20 @@ int pthread_mutex_trylock(pthread_mutex_t *mutex);
 int pthread_mutex_unlock(pthread_mutex_t *mutex);
 
 简单情况下使用互斥量相当容易
+通过调用pthread_mutex_lock或pthread_mutex_trylock锁住互斥量
+处理共享数据，然后调用pthread_mutex_unlock解锁互斥量
+为确保线程能够读取一组变量一致的值
+需要在任何读取这些变量的代码段周围锁住互斥量
+
+当调用线程已经锁住互斥量之后便不能再加锁该互斥量
+试图这样做的结果是返回错误(EDEADLK)或陷入“自死锁”
+不幸的线程将永远等待下去
+
+不能解锁一个已解锁的互斥量，也不能解锁由其他线程锁住的互斥量
+锁住的互斥量是属于加锁线程的，若需要一个unowned锁可以使用信号
+
+在一个alarmserver线程中处理多个闹钟请求
+alarm_mutex.c
+-----------------------
+
+-----------------------
