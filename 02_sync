@@ -165,7 +165,7 @@ typedef struct alarm_tag {
 pthread_mutex_t alarm_mutex = PTHREAD_MUTEX_INITIALIZER;
 alarm_t *alarm_list = NULL;
 
-void alarm_thread(void *arg)
+void *alarm_thread(void *arg)
 {
     alarm_t *alarm;
     int sleep_time;
@@ -175,7 +175,7 @@ void alarm_thread(void *arg)
     for (;;) {
         status = pthread_mutex_lock(&alarm_mutex);
         if (status != 0)
-            err_abort(status, "Lock mutex");
+            ERR_ABORT(status, "Lock mutex");
         alarm = alarm_list;
         if (alarm == NULL)
             sleep_time = 1;
@@ -187,14 +187,14 @@ void alarm_thread(void *arg)
             else
                 sleep_time = alarm->time - now;
 #ifdef DEBUG
-            printf("[waiting: %d(%d)\"%s\"]\n", alarm->time,
+            printf("[waiting: %ld(%d)\"%s\"]\n", (long)alarm->time,
                 sleep_time, alarm->message);
-#endif
+#endif // DEBUG
         }
 
         status = pthread_mutex_unlock(&alarm_mutex);
         if (status != 0)
-            err_abort(status, "Unlock mutex");
+            ERR_ABORT(status, "Unlock mutex");
         if (sleep_time > 0)
             sleep(sleep_time);
         else
@@ -205,6 +205,8 @@ void alarm_thread(void *arg)
             free(alarm);
         }
     }
+
+    return NULL;
 }
 
 int main(int argc, char *argv[])
@@ -214,59 +216,67 @@ int main(int argc, char *argv[])
     alarm_t *alarm, **last, *next;
     pthread_t thread;
 
-    status = pthread_create(&thread, NULL, alarm_thread, NULL);
-    if (status != 0) {
-        err_abort(status, "Create alarm thread");
-        for (;;) {
-            printf("alarm> ");
-            if (fgets(line, sizeof(line), stdin) == NULL)
-                exit(0);
-            if (strlen(line) <= 1)
-                continue;
-            alarm = (alarm_t *)malloc(sizeof(alarm_t));
-            if (NULL == alarm)
-                errno_abort("Allocate alarm");
-            
-            if (sscanf(line, "%d %64[^\n]",
-                &alarm->seconds, alarm->message) < 2) {
-                fprintf(stderr, "Bad command\n");
-                free(alarm);
-            } else {
-                status = pthread_mutex_lock(&alarm_mutex);
-                if (status != 0)
-                    ERR_ABORT(status, "Lock mutex");
-                alarm->time = time(NULL) + alarm->seconds;
+    if ((status = pthread_create(&thread, NULL, alarm_thread, NULL)) != 0)
+        ERR_ABORT(status, "Create alarm thread");
+    for (;;) {
+        printf("alarm> ");
+        if (fgets(line, sizeof(line), stdin) == NULL)
+            exit(0);
+        if (strlen(line) <= 1)
+            continue;
+        alarm = (alarm_t *)malloc(sizeof(alarm_t));
+        if (NULL == alarm)
+            ERRNO_ABORT("Allocate alarm");
 
-                last = &alarm_list;
-                next = *last;
+        if (sscanf(line, "%d %64[^\n]",
+            &alarm->seconds, alarm->message) < 2) {
+            fprintf(stderr, "Bad command\n");
+            free(alarm);
+        } else {
+            status = pthread_mutex_lock(&alarm_mutex);
+            if (status != 0)
+                ERR_ABORT(status, "Lock mutex");
+            alarm->time = time(NULL) + alarm->seconds;
 
-                while (next != NULL) {
-                    if (next->time >= alarm->time) {
-                        alarm->link = next;
-                        *last = alarm;
-                        break;
-                    }
-                    last = &next->link;
-                    next = next->link;
-                }
+            last = &alarm_list;
+            next = *last;
 
-                if (NULL == next) {
+            while (next != NULL) {
+                if (next->time >= alarm->time) {
+                    alarm->link = next;
                     *last = alarm;
-                    alarm->link = NULL;
+                    break;
                 }
-#ifdef DEBUG
-                printf("[list: ");
-                for (next = alarm_list; next != NULL; next = next->link)
-                    printf("%d(%d)[\"%s\"] ",
-                        next->time, next->time - time(NULL), next->message);
-                printf("]\n");
-#endif // DEBUG
-
-                status = pthread_mutex_unlock(&alarm_mutex);
-                if (status != 0)
-                    ERR_ABORT(status, "Unlock mutex");
+                last = &next->link;
+                next = next->link;
             }
+
+            if (NULL == next) {
+                *last = alarm;
+                alarm->link = NULL;
+            }
+#ifdef DEBUG
+            printf("[list: ");
+            for (next = alarm_list; next != NULL; next = next->link)
+                printf("%ld(%ld)[\"%s\"] ", (long)next->time,
+                    (long)(next->time - time(NULL)), next->message);
+            printf("]\n");
+#endif // DEBUG
+            status = pthread_mutex_unlock(&alarm_mutex);
+            if (status != 0)
+                ERR_ABORT(status, "Unlock mutex");
         }
     }
+
+    return 0;
 }
 -----------------------
+
+包含标准UNIX的time_t类型的绝对时间
+表示从UNIX纪元（1970年1月1日00:00）开始至今流逝的时间（以秒为单位）
+调用sched_yield函数的效果是将处理器交给另一个等待运行的线程，如无则立即返回
+
+非阻塞式互斥量锁
+当调用pthread_mutex_lock加锁互斥量，若此时互斥量已被锁住则调用线程将被阻塞
+有时希望互斥量已被锁住时则执行另外的代码路线做一些有益的事情而非仅仅等待
+为此Pthreads提供pthread_mutex_trylock函数，当调用互斥量已被锁住时调用该函数将返回错误代码EBUSY
